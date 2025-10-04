@@ -1,14 +1,16 @@
 import streamlit as st
-import torchaudio
 import tempfile
 import numpy as np
 import librosa
+import soundfile as sf
+import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
+# Your model repo
 MODEL_ID = "kaan84/whisper-small-sinhala-proto"
 
+# Optional imports (for mic mode)
 try:
-    # streamlit-webrtc is optional; we guard its import so upload-only still works
     from streamlit_webrtc import webrtc_streamer, WebRtcMode
     import av
 except Exception:
@@ -17,67 +19,83 @@ except Exception:
     av = None
 
 
+# ----------------------------
+# Load model (cached)
+# ----------------------------
 @st.cache_resource
 def load_model():
     processor = WhisperProcessor.from_pretrained(MODEL_ID)
     model = WhisperForConditionalGeneration.from_pretrained(MODEL_ID)
-    device = "cuda" if torch.cuda.is_available() else "cpu" if hasattr(__import__('torch'), 'cuda') else "cpu"
-    try:
-        import torch
-        model.to("cuda" if torch.cuda.is_available() else "cpu")
-    except Exception:
-        pass
-    return processor, model
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    return processor, model, device
 
 
-processor, model = load_model()
+processor, model, device = load_model()
 
+
+# ----------------------------
+# Streamlit UI
+# ----------------------------
 st.set_page_config(page_title="Sinhala ASR Demo", page_icon="🎤")
 st.title("Sinhala Speech-to-Text (Whisper)")
 
 mode = st.radio("Input mode", ["Upload file", "Microphone (real-time)"])
 
 
-def transcribe_audio_np(audio_np: np.ndarray):
-    # Ensure 16k
+# ----------------------------
+# Transcription function
+# ----------------------------
+def transcribe_audio_np(audio_np: np.ndarray, sr: int = 16000):
     if audio_np.ndim > 1:
         audio_np = np.mean(audio_np, axis=0)
-    # resample if needed - assume caller passes 16000 where possible
-    # Prepare input features
+
+    # Convert to features
     input_features = processor.feature_extractor(
-        audio_np.astype("float32"), sampling_rate=16000, return_tensors="pt"
-    ).input_features
+        audio_np.astype("float32"),
+        sampling_rate=sr,
+        return_tensors="pt"
+    ).input_features.to(device)
+
     with st.spinner("Transcribing..."):
         predicted_ids = model.generate(input_features)
-        transcription = processor.tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        transcription = processor.tokenizer.batch_decode(
+            predicted_ids, skip_special_tokens=True
+        )[0]
     return transcription
 
 
+# ----------------------------
+# Upload mode
+# ----------------------------
 if mode == "Upload file":
-    uploaded_file = st.file_uploader("Upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
+    uploaded_file = st.file_uploader(
+        "Upload an audio file",
+        type=["wav", "mp3", "m4a", "flac", "ogg"]
+    )
+
     if uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmpfile:
             tmpfile.write(uploaded_file.read())
             audio_path = tmpfile.name
 
-        speech_array, sr = torchaudio.load(audio_path)
-        if sr != 16000:
-            resampler = torchaudio.transforms.Resample(sr, 16000)
-            speech_array = resampler(speech_array)
-
-        audio_np = speech_array.squeeze().numpy()
-        transcription = transcribe_audio_np(audio_np)
+        # Load + resample with librosa
+        audio_np, sr = librosa.load(audio_path, sr=16000)
+        transcription = transcribe_audio_np(audio_np, sr=16000)
 
         st.audio(audio_path)
         st.success("✅ Transcription:")
         st.write(transcription)
 
+
+# ----------------------------
+# Microphone mode
+# ----------------------------
 else:
-    # Microphone mode
     if webrtc_streamer is None:
-        st.error("Microphone mode requires additional packages. Install streamlit-webrtc and av (PyAV) and restart the app.")
+        st.error("Microphone mode requires extra packages. Install `streamlit-webrtc` and `av`.")
     else:
-        st.write("Allow microphone access in your browser, then click Start. When finished, click Stop & Transcribe.")
+        st.write("Allow microphone access, click Start, then Stop & Transcribe.")
 
         class AudioAccumulator:
             def __init__(self):
@@ -86,10 +104,8 @@ else:
             def recv_audio(self, frame):
                 try:
                     arr = frame.to_ndarray()
-                    # arr shape usually (channels, samples)
                     if arr.ndim > 1:
                         arr = np.mean(arr, axis=0)
-                    # convert int -> float32 if necessary
                     if np.issubdtype(arr.dtype, np.integer):
                         arr = arr.astype("float32") / np.iinfo(arr.dtype).max
                     else:
@@ -99,7 +115,11 @@ else:
                     pass
                 return frame
 
-        ctx = webrtc_streamer(key="mic", mode=WebRtcMode.SENDONLY, audio_processor_factory=AudioAccumulator)
+        ctx = webrtc_streamer(
+            key="mic",
+            mode=WebRtcMode.SENDONLY,
+            audio_processor_factory=AudioAccumulator,
+        )
 
         if ctx and ctx.audio_processor:
             if st.button("Stop & Transcribe"):
@@ -107,12 +127,14 @@ else:
                 if not frames:
                     st.warning("No audio captured yet. Speak into the microphone and try again.")
                 else:
+                    # Concatenate and resample
                     parts = []
                     for arr, sr in frames:
                         if sr != 16000:
                             arr = librosa.resample(arr, orig_sr=sr, target_sr=16000)
                         parts.append(arr)
                     audio_np = np.concatenate(parts)
-                    transcription = transcribe_audio_np(audio_np)
-                    st.success("Transcription:")
+                    transcription = transcribe_audio_np(audio_np, sr=16000)
+
+                    st.success("✅ Transcription:")
                     st.write(transcription)
