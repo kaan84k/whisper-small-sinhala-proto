@@ -6,3 +6,4 @@ soundfile
 huggingface-hub
 ffmpeg-python
 streamlit-webrtc
+av
