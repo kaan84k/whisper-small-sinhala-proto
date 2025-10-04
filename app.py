@@ -30,54 +30,26 @@ def load_model_and_processor(repo_id: str):
     return processor, model, device
 
 
-def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000, filename: str = None):
-    """Read audio from raw bytes and return 1d float32 numpy array at target sampling rate.
-
-    This tries to read using soundfile (libsndfile) first. If that fails (commonly for mp3/m4a),
-    it writes the bytes to a temporary file and uses librosa.load which can leverage ffmpeg/audioread
-    backends to decode formats not supported by libsndfile.
-    """
+def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000):
+    """Read audio from raw bytes using torchaudio and return a 1D float32 numpy array at target_sr."""
     f = BytesIO(audio_bytes)
-    try:
-        data, sr = sf.read(f, dtype="float32")
-    except Exception:
-        # Fallback: write to a temporary file and use librosa (which can use ffmpeg/audioread)
-        import tempfile
-        import os
 
-        suffix = os.path.splitext(filename)[1] if filename else ".tmp"
-        # Ensure a reasonable suffix
-        if not suffix:
-            suffix = ".tmp"
+    # Load waveform (channels, samples)
+    waveform, sr = torchaudio.load(f)
 
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(audio_bytes)
-                tmp_path = tmp.name
+    # Convert multi-channel → mono
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
 
-            # librosa.load will resample if `sr` is provided. We ask librosa to return mono float32.
-            data, sr = librosa.load(tmp_path, sr=target_sr, mono=True, dtype="float32")
-            # librosa already resampled when sr=target_sr, so keep sr as target
-            sr = target_sr
-        finally:
-            try:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-
-    # If stereo, make mono (libsndfile may return multi-channel)
-    if getattr(data, "ndim", 1) > 1:
-        data = np.mean(data, axis=1)
-
+    # Resample if needed
     if sr != target_sr:
-        data = librosa.resample(data, orig_sr=sr, target_sr=target_sr)
+        waveform = torchaudio.functional.resample(waveform, sr, target_sr)
 
-    # Ensure float32
-    return data.astype("float32"), target_sr
+    # Convert to numpy float32
+    audio_np = waveform.squeeze().cpu().numpy().astype("float32")
 
-
+    return audio_np, target_sr
+    
 def transcribe_audio(audio_np: np.ndarray, processor: WhisperProcessor, model: WhisperForConditionalGeneration, device: str):
     """Run the model to transcribe the provided audio numpy array.
 
