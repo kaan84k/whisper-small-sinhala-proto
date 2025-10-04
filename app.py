@@ -1,10 +1,10 @@
 import streamlit as st
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-import soundfile as sf
+import torchaudio
 import numpy as np
-import librosa
 from io import BytesIO
+
 try:
     from streamlit_webrtc import webrtc_streamer, WebRtcMode
     import av
@@ -19,10 +19,7 @@ MODEL_DEFAULT = "kaan84/whisper-small-sinhala-proto"
 
 @st.cache_resource
 def load_model_and_processor(repo_id: str):
-    """Load processor and model from Hugging Face and move model to the available device.
-
-    Returns: (processor, model, device)
-    """
+    """Load processor and model from Hugging Face and move model to the available device."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     processor = WhisperProcessor.from_pretrained(repo_id)
     model = WhisperForConditionalGeneration.from_pretrained(repo_id)
@@ -30,7 +27,7 @@ def load_model_and_processor(repo_id: str):
     return processor, model, device
 
 
-def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000):
+def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000, filename: str = None):
     """Read audio from raw bytes using torchaudio and return a 1D float32 numpy array at target_sr."""
     f = BytesIO(audio_bytes)
 
@@ -45,19 +42,13 @@ def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000):
     if sr != target_sr:
         waveform = torchaudio.functional.resample(waveform, sr, target_sr)
 
-    # Convert to numpy float32
-    audio_np = waveform.squeeze().cpu().numpy().astype("float32")
+    return waveform.squeeze().cpu().numpy().astype("float32"), target_sr
 
-    return audio_np, target_sr
-    
+
 def transcribe_audio(audio_np: np.ndarray, processor: WhisperProcessor, model: WhisperForConditionalGeneration, device: str):
-    """Run the model to transcribe the provided audio numpy array.
-
-    Returns the transcribed string.
-    """
+    """Run the model to transcribe the provided audio numpy array."""
     inputs = processor(audio_np, sampling_rate=16000, return_tensors="pt")
     input_features = inputs.input_features.to(device)
-    # Generate tokens
     with torch.no_grad():
         generated_ids = model.generate(input_features)
     transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -69,8 +60,8 @@ def main():
     st.title("Whisper (Sinhala) — Streamlit Transcription")
 
     st.markdown(
-        "Upload an audio file and the app will transcribe it using a Whisper model hosted on Hugging Face. "
-        "Supported file types depend on the soundfile/ffmpeg backends (wav, flac, ogg, mp3 with ffmpeg installed)."
+        "Upload an audio file or use your microphone. "
+        "The app will transcribe it using a Whisper model hosted on Hugging Face."
     )
 
     repo_id = st.text_input("Model repo id", value=MODEL_DEFAULT)
@@ -141,10 +132,8 @@ def main():
             def recv_audio(self, frame):
                 try:
                     arr = frame.to_ndarray()  # shape: (channels, samples)
-                    # convert to mono
-                    if arr.ndim > 1:
+                    if arr.ndim > 1:  # convert to mono
                         arr = np.mean(arr, axis=0)
-                    # ensure float32
                     if np.issubdtype(arr.dtype, np.integer):
                         arr = arr.astype("float32") / np.iinfo(arr.dtype).max
                     else:
@@ -154,7 +143,6 @@ def main():
                     pass
                 return frame
 
-        # Start webrtc streamer in sendonly mode to capture mic audio
         ctx = webrtc_streamer(key="mic", mode=WebRtcMode.SENDONLY, audio_processor_factory=AudioRecorder)
 
         if ctx and ctx.audio_processor:
@@ -167,9 +155,12 @@ def main():
                     parts = []
                     for arr, sr in frames:
                         if sr != 16000:
-                            arr = librosa.resample(arr, orig_sr=sr, target_sr=16000)
+                            tensor = torch.from_numpy(arr).unsqueeze(0)
+                            tensor = torchaudio.functional.resample(tensor, sr, 16000)
+                            arr = tensor.squeeze().cpu().numpy()
                         parts.append(arr)
                     audio_np = np.concatenate(parts)
+
                     with st.spinner("Transcribing microphone audio..."):
                         try:
                             text = transcribe_audio(audio_np, processor, model, device)
