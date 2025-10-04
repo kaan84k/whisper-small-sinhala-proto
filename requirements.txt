@@ -4,4 +4,3 @@ torchaudio
 soundfile
 huggingface-hub
 torch
-ffmpeg
