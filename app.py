@@ -70,8 +70,8 @@ def transcribe_audio_np(audio_np: np.ndarray, sr: int = 16000):
 # ----------------------------
 if mode == "Upload file":
     uploaded_file = st.file_uploader(
-        "Upload an audio file (WAV/FLAC recommended)",
-        type=["wav", "flac", "ogg"]  # safer, avoid mp3/m4a
+        "Upload an audio file (WAV/FLAC/OGG recommended)",
+        type=["wav", "flac", "ogg"]
     )
 
     if uploaded_file is not None:
@@ -80,14 +80,14 @@ if mode == "Upload file":
             audio_path = tmpfile.name
 
         try:
-            # Load audio safely with soundfile
+            # Load audio with soundfile (safe on Streamlit Cloud)
             audio_np, sr = sf.read(audio_path, dtype="float32")
 
-            # If stereo -> mono
+            # Convert stereo -> mono if needed
             if audio_np.ndim > 1:
                 audio_np = np.mean(audio_np, axis=1)
 
-            # Resample if needed
+            # Resample only if sample rate is not 16k
             if sr != 16000:
                 audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
                 sr = 16000
@@ -100,7 +100,7 @@ if mode == "Upload file":
 
         except Exception as e:
             st.error(f"Failed to read audio: {e}")
-            st.info("Try uploading a WAV or FLAC file.")
+            st.info("Please upload WAV or FLAC for best results.")
 # ----------------------------
 # Microphone mode
 # ----------------------------
