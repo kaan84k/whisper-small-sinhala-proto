@@ -1,6 +1,7 @@
 import streamlit as st
 import torchaudio
 import tempfile
+import subprocess
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
 # Hugging Face model repo
@@ -29,13 +30,17 @@ if uploaded_file is not None:
         audio_path = tmpfile.name
 
     try:
-        # Use sox_io backend (more reliable for MP3/M4A)
-        speech_array, sr = torchaudio.load(audio_path, backend="sox_io")
+        # Convert everything to WAV (16kHz) using ffmpeg
+        wav_path = audio_path + ".wav"
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path, "-ar", "16000", "-ac", "1", wav_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
 
-        # Resample if not 16kHz
-        if sr != 16000:
-            resampler = torchaudio.transforms.Resample(sr, 16000)
-            speech_array = resampler(speech_array)
+        # Load the converted file
+        speech_array, sr = torchaudio.load(wav_path)
 
         # Extract features
         input_features = processor.feature_extractor(
@@ -52,7 +57,7 @@ if uploaded_file is not None:
             )[0]
 
         # Show results
-        st.audio(audio_path, format="audio/wav")
+        st.audio(wav_path, format="audio/wav")
         st.success("✅ Transcription:")
         st.write(transcription)
 
