@@ -1,9 +1,6 @@
-streamlit>=1.24.0
-transformers>=4.30.0
-torch>=1.13.0
-librosa
+streamlit
+transformers
+torchaudio
 soundfile
 huggingface-hub
-ffmpeg-python
-streamlit-webrtc
-av
+torch
