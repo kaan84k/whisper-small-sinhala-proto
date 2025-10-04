@@ -1,5 +1,11 @@
 import streamlit as st
-import torchaudio
+try:
+    import torchaudio
+except Exception:
+    # torchaudio wheels are platform- and CUDA-dependent and can be tricky to
+    # install. We allow the app to run without torchaudio by falling back to
+    # librosa for file loading/resampling below. See README for install help.
+    torchaudio = None
 import tempfile
 import numpy as np
 import librosa
@@ -60,12 +66,24 @@ if mode == "Upload file":
             tmpfile.write(uploaded_file.read())
             audio_path = tmpfile.name
 
-        speech_array, sr = torchaudio.load(audio_path)
-        if sr != 16000:
-            resampler = torchaudio.transforms.Resample(sr, 16000)
-            speech_array = resampler(speech_array)
-
-        audio_np = speech_array.squeeze().numpy()
+        if torchaudio is not None:
+            speech_array, sr = torchaudio.load(audio_path)
+            if sr != 16000:
+                resampler = torchaudio.transforms.Resample(sr, 16000)
+                speech_array = resampler(speech_array)
+            audio_np = speech_array.squeeze().numpy()
+        else:
+            # Fallback: use librosa to load (pure-Python, easier to install).
+            # librosa.load returns float32 numpy array(s).
+            st.warning(
+                "torchaudio is not installed — using librosa fallback. For best compatibility and performance, install torchaudio matching your PyTorch and CUDA (see README)."
+            )
+            audio_np, sr = librosa.load(audio_path, sr=None, mono=False)
+            # librosa returns (n,) or (n_channels, n). Mirror torchaudio behavior.
+            if isinstance(audio_np, np.ndarray) and audio_np.ndim > 1:
+                audio_np = np.mean(audio_np, axis=0)
+            if sr != 16000:
+                audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
         transcription = transcribe_audio_np(audio_np)
 
         st.audio(audio_path)
