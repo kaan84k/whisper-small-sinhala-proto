@@ -5,3 +5,4 @@ librosa
 soundfile
 huggingface-hub
 ffmpeg-python
+streamlit-webrtc
