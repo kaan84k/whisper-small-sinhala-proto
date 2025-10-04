@@ -1,177 +1,56 @@
 import streamlit as st
-import torch
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
 import torchaudio
-import numpy as np
-from io import BytesIO
+import tempfile
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode
-    import av
-except Exception:
-    webrtc_streamer = None
-    WebRtcMode = None
-    av = None
-
-
-MODEL_DEFAULT = "kaan84/whisper-small-sinhala-proto"
-
+# Model repo on Hugging Face
+MODEL_ID = "kaan84/whisper-small-sinhala-proto"
 
 @st.cache_resource
-def load_model_and_processor(repo_id: str):
-    """Load processor and model from Hugging Face and move model to the available device."""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    processor = WhisperProcessor.from_pretrained(repo_id)
-    model = WhisperForConditionalGeneration.from_pretrained(repo_id)
-    model.to(device)
-    return processor, model, device
+def load_model():
+    """Load processor and model once, cache for faster reloads."""
+    processor = WhisperProcessor.from_pretrained(MODEL_ID)
+    model = WhisperForConditionalGeneration.from_pretrained(MODEL_ID)
+    return processor, model
 
+# Load once at startup
+processor, model = load_model()
 
-def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000, filename: str = None):
-    """Read audio from raw bytes using torchaudio and return a 1D float32 numpy array at target_sr."""
-    f = BytesIO(audio_bytes)
+# Streamlit UI
+st.set_page_config(page_title="Sinhala ASR Demo", page_icon="🎤")
+st.title("🎤 Sinhala Speech-to-Text (Whisper Fine-tuned)")
 
-    # Load waveform (channels, samples)
-    waveform, sr = torchaudio.load(f)
+uploaded_file = st.file_uploader("Upload an audio file", type=["wav", "mp3", "m4a"])
 
-    # Convert multi-channel → mono
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+if uploaded_file is not None:
+    # Save uploaded file to a temporary location
+    with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
+        tmpfile.write(uploaded_file.read())
+        audio_path = tmpfile.name
 
-    # Resample if needed
-    if sr != target_sr:
-        waveform = torchaudio.functional.resample(waveform, sr, target_sr)
+    # Load audio
+    speech_array, sr = torchaudio.load(audio_path)
 
-    return waveform.squeeze().cpu().numpy().astype("float32"), target_sr
+    # Resample to 16kHz if needed
+    if sr != 16000:
+        resampler = torchaudio.transforms.Resample(sr, 16000)
+        speech_array = resampler(speech_array)
 
+    # Convert to features
+    input_features = processor.feature_extractor(
+        speech_array.squeeze().numpy(),
+        sampling_rate=16000,
+        return_tensors="pt"
+    ).input_features
 
-def transcribe_audio(audio_np: np.ndarray, processor: WhisperProcessor, model: WhisperForConditionalGeneration, device: str):
-    """Run the model to transcribe the provided audio numpy array."""
-    inputs = processor(audio_np, sampling_rate=16000, return_tensors="pt")
-    input_features = inputs.input_features.to(device)
-    with torch.no_grad():
-        generated_ids = model.generate(input_features)
-    transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-    return transcription
+    # Run inference
+    with st.spinner("⏳ Transcribing..."):
+        predicted_ids = model.generate(input_features)
+        transcription = processor.tokenizer.batch_decode(
+            predicted_ids, skip_special_tokens=True
+        )[0]
 
-
-def main():
-    st.set_page_config(page_title="Whisper Sinhala Streamlit", layout="wide")
-    st.title("Whisper (Sinhala) — Streamlit Transcription")
-
-    st.markdown(
-        "Upload an audio file or use your microphone. "
-        "The app will transcribe it using a Whisper model hosted on Hugging Face."
-    )
-
-    repo_id = st.text_input("Model repo id", value=MODEL_DEFAULT)
-    col1, col2 = st.columns([2, 1])
-
-    mode = col2.selectbox("Input mode", options=["Upload file", "Microphone (real-time)"])
-
-    with col1:
-        if mode == "Upload file":
-            audio_file = st.file_uploader("Upload audio", type=["wav", "flac", "mp3", "m4a", "ogg"])
-        else:
-            audio_file = None
-
-        language_hint = st.selectbox("Language hint (optional)", options=["auto", "si (Sinhala)", "en (English)"], index=0)
-
-    with col2:
-        if st.button("Load model"):
-            st.session_state["loaded"] = False
-
-    # Load model once and cache
-    with st.spinner("Loading model (this may take a while the first time)..."):
-        try:
-            processor, model, device = load_model_and_processor(repo_id)
-            st.success(f"Model loaded on {device}")
-        except Exception as e:
-            st.error(f"Failed to load model: {e}")
-            return
-
-    if mode == "Upload file":
-        if audio_file is None:
-            st.info("Please upload an audio file to transcribe.")
-            return
-
-        audio_bytes = audio_file.read()
-
-        try:
-            filename = getattr(audio_file, "name", None)
-            audio_np, sr = read_audio_bytes(audio_bytes, target_sr=16000, filename=filename)
-        except Exception as e:
-            st.error(f"Couldn't read audio file: {e}\nIf the file is mp3/m4a you may need ffmpeg installed on your system.")
-            return
-
-        st.audio(audio_bytes)
-
-        if st.button("Transcribe"):
-            with st.spinner("Transcribing — this can take a while depending on CPU/GPU"):
-                try:
-                    text = transcribe_audio(audio_np, processor, model, device)
-                except Exception as e:
-                    st.error(f"Transcription failed: {e}")
-                    return
-
-            st.subheader("Transcription")
-            st.text_area("Result", value=text, height=200)
-            st.download_button("Download transcript", data=text, file_name="transcript.txt")
-
-    else:  # Microphone mode
-        if webrtc_streamer is None:
-            st.error("streamlit-webrtc is not installed. Install dependencies from requirements.txt and restart.")
-            return
-
-        st.write("Allow microphone access in your browser. Click 'Start' to begin streaming audio from your microphone.")
-
-        class AudioRecorder:
-            def __init__(self):
-                self.frames = []  # list of (np.ndarray, sample_rate)
-
-            def recv_audio(self, frame):
-                try:
-                    arr = frame.to_ndarray()  # shape: (channels, samples)
-                    if arr.ndim > 1:  # convert to mono
-                        arr = np.mean(arr, axis=0)
-                    if np.issubdtype(arr.dtype, np.integer):
-                        arr = arr.astype("float32") / np.iinfo(arr.dtype).max
-                    else:
-                        arr = arr.astype("float32")
-                    self.frames.append((arr, frame.sample_rate))
-                except Exception:
-                    pass
-                return frame
-
-        ctx = webrtc_streamer(key="mic", mode=WebRtcMode.SENDONLY, audio_processor_factory=AudioRecorder)
-
-        if ctx and ctx.audio_processor:
-            if st.button("Stop & Transcribe"):
-                frames = ctx.audio_processor.frames
-                if not frames:
-                    st.warning("No audio captured yet. Speak into the microphone and click Stop & Transcribe again.")
-                else:
-                    # Resample and concatenate
-                    parts = []
-                    for arr, sr in frames:
-                        if sr != 16000:
-                            tensor = torch.from_numpy(arr).unsqueeze(0)
-                            tensor = torchaudio.functional.resample(tensor, sr, 16000)
-                            arr = tensor.squeeze().cpu().numpy()
-                        parts.append(arr)
-                    audio_np = np.concatenate(parts)
-
-                    with st.spinner("Transcribing microphone audio..."):
-                        try:
-                            text = transcribe_audio(audio_np, processor, model, device)
-                        except Exception as e:
-                            st.error(f"Transcription failed: {e}")
-                            return
-
-                    st.subheader("Transcription")
-                    st.text_area("Result", value=text, height=200)
-                    st.download_button("Download transcript", data=text, file_name="transcript.txt")
-
-
-if __name__ == "__main__":
-    main()
+    # Display results
+    st.audio(audio_path, format="audio/wav")
+    st.success("✅ Transcription:")
+    st.write(transcription)
