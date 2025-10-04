@@ -4,3 +4,4 @@ torchaudio
 soundfile
 huggingface-hub
 torch
+streamlit-audio-recorder
