@@ -44,7 +44,7 @@ elif option == "Record Audio":
     frames = []
 
     def audio_callback(frame: av.AudioFrame) -> av.AudioFrame:
-        audio = frame.to_ndarray().mean(axis=1)  # mono
+        audio = frame.to_ndarray().mean(axis=1)  # convert stereo → mono
         frames.append(audio)
         return frame
 
@@ -54,8 +54,7 @@ elif option == "Record Audio":
         audio_receiver_size=256,
         media_stream_constraints={"audio": True, "video": False},
         async_processing=True,
-        audio_processor_factory=None,
-        in_audio_frame_callback=audio_callback,
+        audio_frame_callback=audio_callback,  # ✅ correct arg name
     )
 
     if ctx.state.playing and st.button("Stop & Save Recording"):
@@ -69,7 +68,7 @@ elif option == "Record Audio":
 # -------- Transcription --------
 if audio_path is not None:
     try:
-        # Ensure WAV 16kHz using ffmpeg
+        # Ensure WAV 16kHz mono using ffmpeg
         wav_path = audio_path + ".wav"
         subprocess.run(
             ["ffmpeg", "-y", "-i", audio_path, "-ar", "16000", "-ac", "1", wav_path],
