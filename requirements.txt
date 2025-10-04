@@ -5,3 +5,5 @@ soundfile
 huggingface-hub
 torch
 git+https://github.com/stefanrmmr/streamlit_audio_recorder
+streamlit-webrtc
+av
