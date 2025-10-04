@@ -70,8 +70,8 @@ def transcribe_audio_np(audio_np: np.ndarray, sr: int = 16000):
 # ----------------------------
 if mode == "Upload file":
     uploaded_file = st.file_uploader(
-        "Upload an audio file",
-        type=["wav", "mp3", "m4a", "flac", "ogg"]
+        "Upload an audio file (WAV/FLAC recommended)",
+        type=["wav", "flac", "ogg"]  # safer, avoid mp3/m4a
     )
 
     if uploaded_file is not None:
@@ -79,15 +79,28 @@ if mode == "Upload file":
             tmpfile.write(uploaded_file.read())
             audio_path = tmpfile.name
 
-        # Load + resample with librosa
-        audio_np, sr = librosa.load(audio_path, sr=16000)
-        transcription = transcribe_audio_np(audio_np, sr=16000)
+        try:
+            # Load audio safely with soundfile
+            audio_np, sr = sf.read(audio_path, dtype="float32")
 
-        st.audio(audio_path)
-        st.success("✅ Transcription:")
-        st.write(transcription)
+            # If stereo -> mono
+            if audio_np.ndim > 1:
+                audio_np = np.mean(audio_np, axis=1)
 
+            # Resample if needed
+            if sr != 16000:
+                audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=16000)
+                sr = 16000
 
+            transcription = transcribe_audio_np(audio_np, sr=sr)
+
+            st.audio(audio_path)
+            st.success("✅ Transcription:")
+            st.write(transcription)
+
+        except Exception as e:
+            st.error(f"Failed to read audio: {e}")
+            st.info("Try uploading a WAV or FLAC file.")
 # ----------------------------
 # Microphone mode
 # ----------------------------
