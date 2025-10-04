@@ -1,6 +1,6 @@
 streamlit
 transformers==4.44.2
-torch==2.4.0
+torch>=2.5.0
 librosa
 numpy
 soundfile
