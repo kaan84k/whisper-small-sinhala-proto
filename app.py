@@ -30,15 +30,50 @@ def load_model_and_processor(repo_id: str):
     return processor, model, device
 
 
-def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000):
-    """Read audio from raw bytes and return 1d float32 numpy array at target sampling rate."""
+def read_audio_bytes(audio_bytes: bytes, target_sr: int = 16000, filename: str = None):
+    """Read audio from raw bytes and return 1d float32 numpy array at target sampling rate.
+
+    This tries to read using soundfile (libsndfile) first. If that fails (commonly for mp3/m4a),
+    it writes the bytes to a temporary file and uses librosa.load which can leverage ffmpeg/audioread
+    backends to decode formats not supported by libsndfile.
+    """
     f = BytesIO(audio_bytes)
-    data, sr = sf.read(f, dtype="float32")
-    # If stereo, make mono
-    if data.ndim > 1:
+    try:
+        data, sr = sf.read(f, dtype="float32")
+    except Exception:
+        # Fallback: write to a temporary file and use librosa (which can use ffmpeg/audioread)
+        import tempfile
+        import os
+
+        suffix = os.path.splitext(filename)[1] if filename else ".tmp"
+        # Ensure a reasonable suffix
+        if not suffix:
+            suffix = ".tmp"
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            # librosa.load will resample if `sr` is provided. We ask librosa to return mono float32.
+            data, sr = librosa.load(tmp_path, sr=target_sr, mono=True, dtype="float32")
+            # librosa already resampled when sr=target_sr, so keep sr as target
+            sr = target_sr
+        finally:
+            try:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
+    # If stereo, make mono (libsndfile may return multi-channel)
+    if getattr(data, "ndim", 1) > 1:
         data = np.mean(data, axis=1)
+
     if sr != target_sr:
         data = librosa.resample(data, orig_sr=sr, target_sr=target_sr)
+
     # Ensure float32
     return data.astype("float32"), target_sr
 
@@ -100,7 +135,8 @@ def main():
         audio_bytes = audio_file.read()
 
         try:
-            audio_np, sr = read_audio_bytes(audio_bytes, target_sr=16000)
+            filename = getattr(audio_file, "name", None)
+            audio_np, sr = read_audio_bytes(audio_bytes, target_sr=16000, filename=filename)
         except Exception as e:
             st.error(f"Couldn't read audio file: {e}\nIf the file is mp3/m4a you may need ffmpeg installed on your system.")
             return
